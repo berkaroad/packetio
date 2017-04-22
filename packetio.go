@@ -2,13 +2,12 @@ package packetio
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
-
-	"errors"
 	"sync"
 )
 
@@ -29,11 +28,12 @@ var (
 
 // PacketIO is a packet transfer on network.
 type PacketIO struct {
-	rb       *bufio.Reader
-	wb       io.Writer
-	sequence uint8
-	rl       *sync.Mutex
-	wl       *sync.Mutex
+	rb   *bufio.Reader
+	wb   io.Writer
+	rseq uint8
+	wseq uint8
+	rl   *sync.Mutex
+	wl   *sync.Mutex
 }
 
 // New is to create PacketIO
@@ -41,7 +41,8 @@ func New(conn net.Conn) *PacketIO {
 	p := new(PacketIO)
 	p.rb = bufio.NewReaderSize(conn, defaultReaderSize)
 	p.wb = conn
-	p.sequence = 0
+	p.rseq = 0
+	p.wseq = 0
 	p.rl = new(sync.Mutex)
 	p.wl = new(sync.Mutex)
 	return p
@@ -52,7 +53,7 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 	defer p.rl.Unlock()
 	p.rl.Lock()
 
-	p.sequence = 0
+	p.rseq = 0
 	header := []byte{0, 0, 0, 0}
 	if _, err := io.ReadFull(p.rb, header); err != nil {
 		header = nil
@@ -67,11 +68,11 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 		return nil, fmt.Errorf("invalid payload length %d", length)
 	}
 	sequence := uint8(header[3])
-	if sequence != p.sequence {
+	if sequence != p.rseq {
 		header = nil
-		return nil, fmt.Errorf("invalid sequence %d != %d", sequence, p.sequence)
+		return nil, fmt.Errorf("invalid sequence %d != %d", sequence, p.rseq)
 	}
-	p.sequence++
+	p.rseq++
 
 	total := make([]byte, length)
 	if _, err := io.ReadFull(p.rb, total); err != nil {
@@ -100,12 +101,12 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 			return nil, fmt.Errorf("invalid payload length %d", length)
 		}
 		sequence = uint8(header[3])
-		if sequence != p.sequence {
+		if sequence != p.rseq {
 			header = nil
 			total = nil
-			return nil, fmt.Errorf("invalid sequence %d != %d", sequence, p.sequence)
+			return nil, fmt.Errorf("invalid sequence %d != %d", sequence, p.rseq)
 		}
-		p.sequence++
+		p.rseq++
 
 		data := make([]byte, length)
 		if _, err := io.ReadFull(p.rb, data); err != nil {
@@ -131,14 +132,14 @@ func (p *PacketIO) WritePacket(data []byte) error {
 	defer p.wl.Unlock()
 	p.wl.Lock()
 
-	p.sequence = 0
+	p.wseq = 0
 	length := len(data)
 	for length >= maxPayloadLen {
 		buffer := make([]byte, 4, 4+maxPayloadLen)
 		buffer[0] = 0xff
 		buffer[1] = 0xff
 		buffer[2] = 0xff
-		buffer[3] = p.sequence
+		buffer[3] = p.wseq
 		buffer = append(buffer, data[:maxPayloadLen]...)
 
 		if n, err := p.wb.Write(buffer); err != nil {
@@ -151,7 +152,7 @@ func (p *PacketIO) WritePacket(data []byte) error {
 			buffer = nil
 			return ErrBadConn
 		} else {
-			p.sequence++
+			p.wseq++
 			length -= maxPayloadLen
 			data = data[maxPayloadLen:]
 		}
@@ -160,7 +161,7 @@ func (p *PacketIO) WritePacket(data []byte) error {
 	buffer[0] = byte(length)
 	buffer[1] = byte(length >> 8)
 	buffer[2] = byte(length >> 16)
-	buffer[3] = p.sequence
+	buffer[3] = p.wseq
 	buffer = append(buffer, data...)
 	if n, err := p.wb.Write(buffer); err != nil {
 		buffer = nil
@@ -172,7 +173,7 @@ func (p *PacketIO) WritePacket(data []byte) error {
 		buffer = nil
 		return ErrBadConn
 	} else {
-		p.sequence++
+		p.wseq++
 		if DEBUG {
 			consoleLog.Println("WritePacket", append(buffer, data...))
 		}
@@ -185,7 +186,7 @@ func (p *PacketIO) WritePacketBatch(total, data []byte, direct bool) ([]byte, er
 	defer p.wl.Unlock()
 	p.wl.Lock()
 
-	p.sequence = 0
+	p.wseq = 0
 	if data == nil {
 		if direct == true {
 			n, err := p.wb.Write(total)
@@ -209,19 +210,19 @@ func (p *PacketIO) WritePacketBatch(total, data []byte, direct bool) ([]byte, er
 
 	length := len(data)
 	for length >= maxPayloadLen {
-		header := []byte{0xff, 0xff, 0xff, p.sequence}
+		header := []byte{0xff, 0xff, 0xff, p.wseq}
 		total = append(total, header...)
 		total = append(total, data[:maxPayloadLen]...)
 
-		p.sequence++
+		p.wseq++
 		length -= maxPayloadLen
 		data = data[maxPayloadLen:]
 	}
 
-	header := []byte{byte(length), byte(length >> 8), byte(length >> 16), p.sequence}
+	header := []byte{byte(length), byte(length >> 8), byte(length >> 16), p.wseq}
 	total = append(total, header...)
 	total = append(total, data[:maxPayloadLen]...)
-	p.sequence++
+	p.wseq++
 
 	if direct {
 		if n, err := p.wb.Write(total); err != nil {
