@@ -33,8 +33,8 @@ type PacketIO struct {
 	sequence uint8
 }
 
-// NewPacketIO is to create PacketIO
-func NewPacketIO(conn net.Conn) *PacketIO {
+// New is to create PacketIO
+func New(conn net.Conn) *PacketIO {
 	p := new(PacketIO)
 	p.rb = bufio.NewReaderSize(conn, defaultReaderSize)
 	p.wb = conn
