@@ -85,7 +85,9 @@ func (p *PacketIO) ReadPacket() ([]byte, error) {
 		}
 		total = append(total, data...)
 	}
-	fmt.Println("ReadPacket", total)
+	if DEBUG {
+		consoleLog.Println("ReadPacket", total)
+	}
 	return total, nil
 }
 
